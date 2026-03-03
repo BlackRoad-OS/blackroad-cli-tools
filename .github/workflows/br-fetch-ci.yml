@@ -1,0 +1,92 @@
+name: 🚀 br-fetch CI
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - 'br-fetch/**'
+      - '.github/workflows/br-fetch-ci.yml'
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - 'br-fetch/**'
+      - '.github/workflows/br-fetch-ci.yml'
+
+jobs:
+  lint:
+    name: ShellCheck Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint br-fetch.sh
+        run: shellcheck -S warning br-fetch/br-fetch.sh
+
+  test:
+    name: Unit & Integration Tests
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bats (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y bats
+
+      - name: Install bats (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core
+
+      - name: Make br-fetch.sh executable
+        run: chmod +x br-fetch/br-fetch.sh
+
+      - name: Run tests
+        run: bats br-fetch/tests/test_br_fetch.bats
+
+      - name: Smoke test --version
+        run: bash br-fetch/br-fetch.sh --version
+
+      - name: Smoke test --help
+        run: bash br-fetch/br-fetch.sh --help
+
+  # Validate that the traffic light status badge is present
+  status-badge:
+    name: Check Production Status Badge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify GREEN LIGHT badge in br-fetch/README.md
+        run: |
+          if grep -q "GREEN LIGHT" br-fetch/README.md; then
+            echo "✅ Production status badge present"
+          else
+            echo "❌ Missing GREEN LIGHT production badge in br-fetch/README.md"
+            exit 1
+          fi
+
+      - name: Verify GREEN LIGHT badge in root README.md
+        run: |
+          if grep -q "GREEN LIGHT" README.md; then
+            echo "✅ Root README production status badge present"
+          else
+            echo "❌ Missing GREEN LIGHT production badge in README.md"
+            exit 1
+          fi
