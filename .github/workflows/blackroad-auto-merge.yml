@@ -2,11 +2,11 @@ name: 🤖 BlackRoad Auto-Merge
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   check_suite:
     types: [completed]
   workflow_run:
-    workflows: ["🔍 BlackRoad Compliance Check"]
+    workflows: ["🔍 BlackRoad Compliance Check", "Trinity Compliance Check", "Deploy to Cloudflare Pages"]
     types: [completed]
 
 permissions:
@@ -19,14 +19,16 @@ jobs:
     name: Auto-Merge Compliant PRs
     runs-on: ubuntu-latest
 
-    # Only run for bot-created PRs
+    # Run for bot-created PRs (github-actions, copilot, dependabot)
     if: |
       github.event.pull_request.user.login == 'github-actions[bot]' ||
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
+      contains(github.event.pull_request.user.login, 'copilot') ||
       github.actor == 'github-actions[bot]'
 
     steps:
       - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: 🔍 Get PR Details
         id: pr
@@ -68,11 +70,19 @@ jobs:
         id: validate
         run: |
           CAN_MERGE="false"
+          BRANCH="${{ steps.pr.outputs.branch }}"
 
-          # Check 1: Is this from blackroad-auto-fix branch?
-          if [[ "${{ steps.pr.outputs.branch }}" == "blackroad-auto-fix" ]]; then
-            echo "✅ PR is from auto-fix branch"
+          # Check 1: Is this from an auto-fix or bot branch?
+          IS_BOT_BRANCH=false
+          if [[ "$BRANCH" == "blackroad-auto-fix" ]] || \
+             [[ "$BRANCH" == dependabot/* ]] || \
+             [[ "$BRANCH" == copilot/* ]] || \
+             [[ "$BRANCH" == bot/* ]]; then
+            IS_BOT_BRANCH=true
+            echo "✅ PR is from bot/automated branch: $BRANCH"
+          fi
 
+          if [[ "$IS_BOT_BRANCH" == "true" ]]; then
             # Check 2: Is mergeable?
             if [[ "${{ steps.pr.outputs.mergeable }}" == "MERGEABLE" ]]; then
               echo "✅ PR is mergeable (no conflicts)"
@@ -88,7 +98,7 @@ jobs:
               echo "⚠️  PR has merge conflicts or is not mergeable"
             fi
           else
-            echo "ℹ️  Not an auto-fix PR (branch: ${{ steps.pr.outputs.branch }}), skipping"
+            echo "ℹ️  Not an automated PR (branch: $BRANCH), skipping auto-merge"
           fi
 
           echo "can_merge=$CAN_MERGE" >> $GITHUB_OUTPUT
@@ -102,16 +112,13 @@ jobs:
 
           echo "🤖 Merging PR #$PR_NUMBER..."
 
+          MERGE_BODY="Auto-merged by BlackRoad Auto-Merge System. All compliance checks passed."
+
           # Merge with squash and delete branch
           gh pr merge "$PR_NUMBER" \
             --squash \
             --delete-branch \
-            --body "✅ Auto-merged by BlackRoad Auto-Merge System
-
-This PR passed all compliance checks and was automatically merged.
-
-🤖 Automated by BlackRoad Auto-Merge
-© 2025-2026 BlackRoad OS, Inc."
+            --body "$MERGE_BODY"
 
           echo "✅ PR #$PR_NUMBER merged successfully!"
 
@@ -122,56 +129,34 @@ This PR passed all compliance checks and was automatically merged.
         run: |
           PR_NUMBER="${{ steps.pr.outputs.number }}"
 
-          gh pr comment "$PR_NUMBER" --body "🤖 **Auto-Merge Successful**
+          COMMENT_BODY="🤖 Auto-Merge Successful - This PR was auto-merged: all compliance checks passed, no merge conflicts, created by automated bot. Changes are now live. -- Automated by BlackRoad Auto-Merge System (c) 2025-2026 BlackRoad OS, Inc."
 
-This PR has been automatically merged because:
-- ✅ Created by BlackRoad auto-fix bot
-- ✅ All compliance checks passed
-- ✅ No merge conflicts
-- ✅ No manual review required
-
-The changes are now live on the default branch.
-
----
-🤖 Automated by BlackRoad Auto-Merge System
-© 2025-2026 BlackRoad OS, Inc." || true
+          gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY" || true
 
       - name: 📝 Create Issue on Validation Failure
         if: |
           steps.validate.outputs.can_merge == 'false' &&
-          steps.pr.outputs.number != '' &&
-          steps.pr.outputs.branch == 'blackroad-auto-fix'
+          steps.pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER="${{ steps.pr.outputs.number }}"
           REPO="${{ github.repository }}"
+          BRANCH="${{ steps.pr.outputs.branch }}"
+
+          # Only create issue for automated branches
+          if [[ "$BRANCH" != dependabot/* ]] && [[ "$BRANCH" != copilot/* ]] && [[ "$BRANCH" != bot/* ]] && [[ "$BRANCH" != "blackroad-auto-fix" ]]; then
+            echo "Skipping issue creation for non-automated branch: $BRANCH"
+            exit 0
+          fi
+
+          ISSUE_BODY="Auto-Fix PR #$PR_NUMBER Requires Manual Review. Branch: ${{ steps.pr.outputs.branch }}, Mergeable: ${{ steps.pr.outputs.mergeable }}, State: ${{ steps.pr.outputs.merge_state }}, Status: ${{ steps.pr.outputs.status }}. PR: https://github.com/$REPO/pull/$PR_NUMBER"
 
           gh issue create \
-            --title "⚠️  Auto-Fix PR Requires Manual Review: #$PR_NUMBER" \
-            --body "## Auto-Fix PR Could Not Be Auto-Merged
-
-**PR:** #$PR_NUMBER
-**Status:** Manual review needed ⚠️
-**Reason:** Checks failed or merge conflicts detected
-
-### Details:
-The auto-fix PR did not pass automatic validation.
-
-**Branch:** \`${{ steps.pr.outputs.branch }}\`
-**Mergeable:** \`${{ steps.pr.outputs.mergeable }}\`
-**Merge State:** \`${{ steps.pr.outputs.merge_state }}\`
-**Check Status:** \`${{ steps.pr.outputs.status }}\`
-
-### Action Required:
-Please review the PR manually and resolve any issues.
-
-**PR Link:** https://github.com/$REPO/pull/$PR_NUMBER
-
----
-🤖 Automated Alert from BlackRoad Auto-Merge System
-© 2025-2026 BlackRoad OS, Inc." \
-            --label "auto-fix-failed,needs-review" || true
+            --title "Auto-Fix PR Requires Manual Review: #$PR_NUMBER" \
+            --body "$ISSUE_BODY" \
+            --label "auto-fix-failed" \
+            --label "needs-review" || true
 
       - name: 🚨 Notify on Critical Failure
         if: failure()

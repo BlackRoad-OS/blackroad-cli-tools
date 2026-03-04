@@ -1,0 +1,17 @@
+name = "blackroad-agents"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Worker limits - use Workers Unbound for longer tasks (up to 30 seconds CPU)
+[limits]
+cpu_ms = 30000
+
+[vars]
+ENVIRONMENT = "production"
+ORG_NAME = "BlackRoad OS, Inc."
+
+# Routes - bind to blackroad-agents subdomain
+[[routes]]
+pattern = "blackroad-agents.amundsonalexa.workers.dev/*"
+zone_name = "amundsonalexa.workers.dev"

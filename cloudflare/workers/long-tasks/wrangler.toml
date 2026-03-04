@@ -1,0 +1,21 @@
+name = "blackroad-long-tasks"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Workers Unbound for longer tasks - up to 30 seconds CPU time
+[limits]
+cpu_ms = 30000
+
+[vars]
+ENVIRONMENT = "production"
+ORG_NAME = "BlackRoad OS, Inc."
+
+# Durable Objects for stateful long-running tasks
+[[durable_objects.bindings]]
+name = "TASK_QUEUE"
+class_name = "TaskQueue"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TaskQueue"]

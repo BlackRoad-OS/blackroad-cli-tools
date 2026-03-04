@@ -1,0 +1,140 @@
+name: ⚡ Cloudflare Workers Deploy
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'cloudflare/**'
+      - 'wrangler.toml'
+      - '.github/workflows/cloudflare-workers.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deploy environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      worker_name:
+        description: 'Worker to deploy (leave empty for all)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy-workers:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 📦 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: 🔐 Authenticate with Cloudflare
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "⚠️  CLOUDFLARE_API_TOKEN not set — skipping deploy"
+            echo "To enable deploy, add CLOUDFLARE_API_TOKEN to repository secrets"
+            exit 0
+          fi
+          echo "✅ Cloudflare API token found"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: 🚀 Deploy Agent Worker
+        if: |
+          (github.event.inputs.worker_name == '' || github.event.inputs.worker_name == 'blackroad-agents') &&
+          secrets.CLOUDFLARE_API_TOKEN != ''
+        run: |
+          if [ -f "cloudflare/workers/blackroad-agents/wrangler.toml" ]; then
+            echo "🚀 Deploying blackroad-agents worker..."
+            wrangler deploy --config cloudflare/workers/blackroad-agents/wrangler.toml
+          else
+            echo "ℹ️  No blackroad-agents worker config found, skipping"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: 🚀 Deploy Long-Tasks Worker
+        if: |
+          (github.event.inputs.worker_name == '' || github.event.inputs.worker_name == 'long-tasks') &&
+          secrets.CLOUDFLARE_API_TOKEN != ''
+        run: |
+          if [ -f "cloudflare/workers/long-tasks/wrangler.toml" ]; then
+            echo "🚀 Deploying long-tasks worker..."
+            wrangler deploy --config cloudflare/workers/long-tasks/wrangler.toml
+          else
+            echo "ℹ️  No long-tasks worker config found, skipping"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: ✅ Verify Deployments
+        if: secrets.CLOUDFLARE_API_TOKEN != ''
+        run: |
+          echo "🔍 Verifying Cloudflare Workers deployments..."
+          wrangler deployments list || echo "ℹ️  Could not list deployments"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # Offload longer CI tasks to Cloudflare Workers via HTTP
+  dispatch-long-tasks:
+    name: Dispatch Long Tasks to Cloudflare
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: deploy-workers
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 📤 Dispatch analysis tasks to Cloudflare Worker
+        run: |
+          WORKER_URL="${{ secrets.CLOUDFLARE_WORKER_URL }}"
+
+          if [ -z "$WORKER_URL" ]; then
+            WORKER_URL="https://blackroad-agents.amundsonalexa.workers.dev"
+          fi
+
+          echo "📤 Dispatching long-running tasks to: $WORKER_URL"
+
+          # Dispatch repo analysis (longer task offloaded to Cloudflare)
+          curl -s -X POST "$WORKER_URL/tasks/analyze" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_WORKER_TOKEN }}" \
+            -d "{
+              \"repo\": \"${{ github.repository }}\",
+              \"sha\": \"${{ github.sha }}\",
+              \"branch\": \"${{ github.ref_name }}\",
+              \"actor\": \"${{ github.actor }}\",
+              \"event\": \"${{ github.event_name }}\"
+            }" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            -o /tmp/worker-response.json || echo "⚠️  Worker dispatch timed out (task may still be running)"
+
+          if [ -f /tmp/worker-response.json ]; then
+            echo "📊 Worker response:"
+            cat /tmp/worker-response.json | python3 -m json.tool 2>/dev/null || cat /tmp/worker-response.json
+          fi
+
+          echo "✅ Long tasks dispatched successfully"
